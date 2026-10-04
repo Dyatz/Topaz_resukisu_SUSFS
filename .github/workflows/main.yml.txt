@@ -1,0 +1,530 @@
+name: Build CLO Kernel + LTO Full
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_repo:
+        description: "URL repo kernel"
+        default: "https://github.com/topnotchfreaks/kernel_msm-5.15.git"
+      kernel_branch:
+        description: "Branch kernel"
+        default: "codelinaro"
+      defconfig:
+        description: "Nama defconfig (contoh: gki_defconfig)"
+        required: true
+      susfs_branch:
+        description: "Branch SUSFS (sesuai versi kernel)"
+        default: "gki-android13-5.15"
+      resukisu_branch:
+        description: "Branch ReSukiSU"
+        default: "main"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      KREPO: ${{ inputs.kernel_repo }}
+      KBRANCH: ${{ inputs.kernel_branch }}
+      DEFCONFIG: ${{ inputs.defconfig }}
+      SUSFS_BRANCH: ${{ inputs.susfs_branch }}
+      KSU_BRANCH: ${{ inputs.resukisu_branch }}
+    steps:
+      - name: Kosongkan disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Tambah swap (cegah kehabisan memori)
+        run: |
+          sudo swapoff -a || true
+          sudo fallocate -l 10G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git curl bc bison flex libssl-dev libelf-dev \
+            clang lld llvm zip cpio xz-utils python3 dwarves \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+          pahole --version || true
+
+      - name: Clone kernel
+        run: |
+          git clone --depth=1 -b "$KBRANCH" "$KREPO" kernel
+          git -C kernel log -1 --oneline
+          head -4 kernel/Makefile
+
+      - name: Pasang ReSukiSU
+        working-directory: kernel
+        run: |
+          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s "$KSU_BRANCH"
+          ls -l drivers/kernelsu
+
+      - name: Patch SUSFS
+        working-directory: kernel
+        run: |
+          git clone --depth=1 -b "$SUSFS_BRANCH" https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu
+          cp -r ../susfs4ksu/kernel_patches/fs/* fs/
+          cp -r ../susfs4ksu/kernel_patches/include/linux/* include/linux/
+          PATCH_FILE=$(ls ../susfs4ksu/kernel_patches/50_add_susfs_in_*.patch | head -1)
+          echo "Pakai patch: $PATCH_FILE"
+          patch -p1 < "$PATCH_FILE" || true
+
+          # Perbaiki otomatis 2 hunk include yang biasanya gagal
+          python3 - <<'PY'
+          def read(p):
+              return open(p, encoding="utf-8", errors="surrogateescape").read()
+
+          def write(p, s):
+              open(p, "w", encoding="utf-8", errors="surrogateescape").write(s)
+
+          def insert_after(path, anchors, text, skip_if):
+              s = read(path)
+              if skip_if in s:
+                  return
+              for a in anchors:
+                  i = s.find(a)
+                  if i != -1:
+                      j = s.index("\n", i) + 1
+                      write(path, s[:j] + text + s[j:])
+                      return
+              raise SystemExit("Anchor tidak ketemu di " + path)
+
+          def insert_before(path, anchors, text, skip_if):
+              s = read(path)
+              if skip_if in s:
+                  return
+              for a in anchors:
+                  i = s.find(a)
+                  if i != -1:
+                      write(path, s[:i] + text + s[i:])
+                      return
+              raise SystemExit("Anchor tidak ketemu di " + path)
+
+          B1 = "#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif // #ifdef CONFIG_KSU_SUSFS\n"
+          B2 = ("\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n"
+                "extern bool susfs_is_current_ksu_domain(void);\n"
+                "extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n\n"
+                "#define CL_COPY_MNT_NS BIT(25) /* used by copy_mnt_ns() */\n"
+                "#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n")
+          B3 = ("#if defined(CONFIG_KSU_SUSFS_SUS_KSTAT) || defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)\n"
+                "#include <linux/susfs_def.h>\n#endif\n")
+
+          insert_after("fs/namespace.c", ["#include <linux/mnt_idmapping.h>", "#include <linux/shmem_fs.h>"], B1, "linux/susfs_def.h")
+          insert_after("fs/namespace.c", ['#include "internal.h"'], B2, "define CL_COPY_MNT_NS BIT")
+          insert_before("fs/proc/task_mmu.c", ["#include <asm/elf.h>"], B3, "linux/susfs_def.h")
+          print("Perbaikan include selesai")
+          PY
+          rm -f fs/namespace.c.rej fs/proc/task_mmu.c.rej
+          find . -name "*.orig" -delete
+
+          # Perbaiki otomatis hunk lain yang gagal (pencocokan longgar + fallback include)
+          python3 - <<'PY2' || { echo "::error::Ada hunk patch yang tidak bisa diterapkan otomatis. Kirim log ini ke Claude."; exit 1; }
+          import os, re, sys
+
+          def read_lines(p):
+              with open(p, encoding="utf-8", errors="surrogateescape") as f:
+                  return f.read().split("\n")
+
+          def write_lines(p, lines):
+              with open(p, "w", encoding="utf-8", errors="surrogateescape") as f:
+                  f.write("\n".join(lines))
+
+          def norm(s):
+              return " ".join(s.split())
+
+          def parse_rej(path):
+              hunks, cur = [], None
+              for raw in read_lines(path):
+                  if raw.startswith("@@"):
+                      m = re.match(r"@@ -(\d+)", raw)
+                      cur = {"start": int(m.group(1)) if m else 1, "lines": [], "header": raw}
+                      hunks.append(cur)
+                  elif cur is not None:
+                      if raw.startswith("\\"):
+                          continue
+                      if raw[:1] in (" ", "-", "+"):
+                          cur["lines"].append((raw[0], raw[1:]))
+                      elif raw == "":
+                          cur["lines"].append((" ", ""))
+              # buang baris kosong di ujung yang berasal dari akhir file
+              for h in hunks:
+                  while h["lines"] and h["lines"][-1] == (" ", "") and len(h["lines"]) > 1:
+                      h["lines"].pop()
+              return hunks
+
+          def try_match(flines, hunk, fuzz):
+              L = hunk["lines"]
+              lead = 0
+              while lead < len(L) and L[lead][0] == " ":
+                  lead += 1
+              trail = 0
+              while trail < len(L) - lead and L[len(L) - 1 - trail][0] == " ":
+                  trail += 1
+              cut_l, cut_t = min(fuzz, lead), min(fuzz, trail)
+              T = L[cut_l: len(L) - cut_t]
+              pat = [(t, x) for t, x in T if t in " -"]
+              if not any(norm(x) for _, x in pat):
+                  return None
+              cands = []
+              n = len(pat)
+              for i in range(0, len(flines) - n + 1):
+                  ok = True
+                  for k in range(n):
+                      if norm(flines[i + k]) != norm(pat[k][1]):
+                          ok = False
+                          break
+                  if ok:
+                      cands.append(i)
+              if not cands:
+                  return None
+              want = hunk["start"] - 1 + cut_l
+              best = min(cands, key=lambda i: abs(i - want))
+              if len(cands) > 1 and abs(best - want) > 300:
+                  return None
+              # susun hasil
+              out, p = [], 0
+              for t, x in T:
+                  if t == " ":
+                      out.append(flines[best + p]); p += 1
+                  elif t == "-":
+                      p += 1
+                  else:
+                      out.append(x)
+              return best, n, out
+
+          def include_only(hunk):
+              adds = [x for t, x in hunk["lines"] if t == "+" and x.strip()]
+              rem = [1 for t, _ in hunk["lines"] if t == "-"]
+              if rem or not adds:
+                  return False
+              return all(a.lstrip().startswith(("#", "extern")) for a in adds)
+
+          def include_fallback(flines, hunk):
+              if hunk["start"] > 150:
+                  return None
+              adds = [x for t, x in hunk["lines"] if t == "+"]
+              last = -1
+              for i, l in enumerate(flines[:200]):
+                  if l.startswith("#include"):
+                      last = i
+              if last < 0:
+                  return None
+              while last + 1 < len(flines) and flines[last + 1].startswith("#endif"):
+                  last += 1
+              return last + 1, adds
+
+          def single_add_block(hunk):
+              L = hunk["lines"]
+              if any(t == "-" for t, _ in L):
+                  return None
+              idx = [i for i, (t, _) in enumerate(L) if t == "+"]
+              if not idx:
+                  return None
+              a, b = idx[0], idx[-1]
+              if any(L[i][0] != "+" for i in range(a, b + 1)):
+                  return None
+              return [x for _, x in L[:a]], [x for _, x in L[a:b + 1]], [x for _, x in L[b + 1:]]
+
+          def find_seq(flines, seq, want, window=400):
+              n = len(seq)
+              if n == 0 or not any(norm(x) for x in seq):
+                  return None
+              cands = []
+              for i in range(0, len(flines) - n + 1):
+                  if all(norm(flines[i + k]) == norm(seq[k]) for k in range(n)):
+                      if abs(i - want) <= window:
+                          cands.append(i)
+              if len(cands) == 1:
+                  return cands[0]
+              return None
+
+          def anchor_insert(flines, hunk):
+              parts = single_add_block(hunk)
+              if not parts:
+                  return None
+              lead, adds, trail = parts
+              want = hunk["start"] - 1
+              # 1) jangkar dari konteks sebelum blok tambahan (konteks sesudahnya diabaikan)
+              for k in range(len(lead), 0, -1):
+                  seq = lead[len(lead) - k:]
+                  i = find_seq(flines, seq, want)
+                  if i is not None:
+                      return i + k, adds, f"setelah konteks {k} baris (jangkar atas)"
+              # 2) jangkar dari konteks sesudah blok tambahan
+              for k in range(len(trail), 0, -1):
+                  seq = trail[:k]
+                  i = find_seq(flines, seq, want + len(lead))
+                  if i is not None:
+                      return i, adds, f"sebelum konteks {k} baris (jangkar bawah)"
+              return None
+
+          def show_context(flines, hunk):
+              s = max(0, hunk["start"] - 15)
+              print("--- isi file di sekitar baris", hunk["start"], "(untuk diagnosa):")
+              for i in range(s, min(len(flines), s + 60)):
+                  print(f"{i + 1:5d}| {flines[i]}")
+
+          def already_applied(flines, hunk):
+              adds = [norm(x) for t, x in hunk["lines"] if t == "+" and x.strip()]
+              if not adds or not any(len(a) > 15 for a in adds):
+                  return False
+              text = {norm(l) for l in flines}
+              return all(a in text for a in adds)
+
+          failed_any = False
+          for root, _, files in os.walk("."):
+              if ".git" in root.split(os.sep):
+                  continue
+              for fn in files:
+                  if not fn.endswith(".rej"):
+                      continue
+                  rej = os.path.join(root, fn)
+                  target = rej[:-4]
+                  if not os.path.exists(target):
+                      print("SKIP (target tidak ada):", rej); failed_any = True; continue
+                  flines = read_lines(target)
+                  left = []
+                  for h in parse_rej(rej):
+                      if already_applied(flines, h):
+                          print(f"[sudah ada] {target} {h['header']}")
+                          continue
+                      done = False
+                      for fuzz in range(0, 4):
+                          r = try_match(flines, h, fuzz)
+                          if r:
+                              best, n, out = r
+                              flines[best:best + n] = out
+                              print(f"[OK fuzz={fuzz}] {target} {h['header']} -> baris {best + 1}")
+                              done = True
+                              break
+                      if not done and include_only(h):
+                          r = include_fallback(flines, h)
+                          if r:
+                              idx, adds = r
+                              flines[idx:idx] = adds
+                              print(f"[OK include-fallback] {target} {h['header']} -> setelah baris {idx}")
+                              done = True
+                      if not done:
+                          r = anchor_insert(flines, h)
+                          if r:
+                              idx, adds, how = r
+                              flines[idx:idx] = adds
+                              print(f"[OK anchor] {target} {h['header']} -> {how}, disisipkan di baris {idx + 1}")
+                              done = True
+                      if not done:
+                          left.append(h)
+                  write_lines(target, flines)
+                  if left:
+                      failed_any = True
+                      print(f"[GAGAL] {target}: {len(left)} hunk belum bisa diterapkan")
+                      for h in left:
+                          print(h["header"])
+                          for t, x in h["lines"]:
+                              print(t + x)
+                          show_context(flines, h)
+                  else:
+                      os.remove(rej)
+          if failed_any:
+              sys.exit(1)
+          print("Semua hunk berhasil diterapkan")
+          PY2
+
+          # Sesuaikan fdinfo.c untuk kernel lama (u32 mask + tanpa inotify_mark_user_mask)
+          python3 - <<'PY3'
+          import os, re, subprocess
+
+          path = "fs/notify/fdinfo.c"
+          if not os.path.exists(path):
+              raise SystemExit(0)
+
+          with open(path, encoding="utf-8", errors="surrogateescape") as f:
+              s = f.read()
+
+          changed = False
+
+          # 1) Kernel lama: 'u32 mask = ...' ada tepat setelah 'if (inode) {'. Deklarasi harus
+          #    berada SEBELUM blok SUSFS (label diikuti deklarasi tidak boleh di C).
+          m_decl = re.search(r"\n([ \t]*u32 mask = mark->mask & IN_ALL_EVENTS;[^\n]*)\n", s)
+          m_blk = re.search(r"if \(inode\) \{\n(#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n)", s)
+          if m_decl and m_blk and m_decl.start() > m_blk.start():
+              decl = m_decl.group(1)
+              s = s[:m_decl.start()] + "\n" + s[m_decl.end():]
+              ins = s.index(m_blk.group(1), m_blk.start())
+              s = s[:ins] + decl + "\n" + s[ins:]
+              changed = True
+              print("[fdinfo] deklarasi 'u32 mask' dipindah ke sebelum blok SUSFS")
+
+          # 2) Kernel lama tidak punya inotify_mark_user_mask(): pakai 'mask' bila fungsinya tak didefinisikan
+          if "inotify_mark_user_mask(mark)" in s:
+              out = subprocess.run(
+                  ["grep", "-rIl", "--include=*.h", "--include=*.c", r"inotify_mark_user_mask", "include", "fs"],
+                  capture_output=True, text=True).stdout.split()
+              others = [p for p in out if p != path]
+              has_mask_var = re.search(r"u32 mask = mark->mask & IN_ALL_EVENTS;", s) is not None
+              if not others and has_mask_var:
+                  s = s.replace("inotify_mark_user_mask(mark)", "mask")
+                  changed = True
+                  print("[fdinfo] inotify_mark_user_mask(mark) -> mask")
+              elif not others:
+                  s = s.replace("inotify_mark_user_mask(mark)", "(mark->mask & IN_ALL_EVENTS)")
+                  changed = True
+                  print("[fdinfo] inotify_mark_user_mask(mark) -> (mark->mask & IN_ALL_EVENTS)")
+
+          if changed:
+              with open(path, "w", encoding="utf-8", errors="surrogateescape") as f:
+                  f.write(s)
+          else:
+              print("[fdinfo] tidak ada yang perlu diperbaiki")
+          PY3
+
+          # Penyesuaian kompatibilitas fdinfo.c untuk kernel yang lebih lama
+          if [ -f fs/notify/fdinfo.c ]; then
+            if ! grep -rqE "inotify_mark_user_mask[[:space:]]*\(" include fs/notify --include=*.h; then
+              echo "inotify_mark_user_mask tidak ada di kernel ini -> pakai (mark->mask & IN_ALL_EVENTS)"
+              sed -i 's/inotify_mark_user_mask(mark)/(mark->mask \& IN_ALL_EVENTS)/g' fs/notify/fdinfo.c
+            fi
+            sed -i 's/^orig_flow:[[:space:]]*$/orig_flow: ;/' fs/notify/fdinfo.c
+            grep -n "orig_flow\|IN_ALL_EVENTS\|inotify_mark_user_mask" fs/notify/fdinfo.c || true
+          fi
+
+          if find . -name "*.rej" | grep -q .; then
+            echo "::error::Ada hunk patch yang gagal. Kirim log ini ke Claude."
+            find . -name "*.rej" -exec sh -c 'echo "=== $1"; cat "$1"' _ {} \;
+            exit 1
+          fi
+
+      - name: Perbaiki error kompilasi (kernel lebih lama dari patch SUSFS)
+        working-directory: kernel
+        run: |
+          # Patch SUSFS dibuat untuk kernel GKI yang lebih baru. Kernel Xiaomi ini belum punya
+          # beberapa fungsi/makro-nya, jadi dipakai padanan yang hasilnya sama.
+
+          # 1) fs/susfs.c: i_user_ns() belum ada -> pakai &init_user_ns
+          if grep -q "i_user_ns" fs/susfs.c && ! grep -rq "i_user_ns" include; then
+            sed -i 's/i_user_ns([^()]*)/\&init_user_ns/g' fs/susfs.c
+            echo "[fix] fs/susfs.c: i_user_ns(...) -> &init_user_ns"
+          fi
+
+          # 2) fs/proc/task_mmu.c: VMA padding belum ada -> VMA_PAD_START(vma) sama dengan vma->vm_end
+          if grep -q "VMA_PAD_START" fs/proc/task_mmu.c && ! grep -rqE "define[[:space:]]+VMA_PAD_START" include; then
+            sed -i 's/VMA_PAD_START([[:space:]]*\([^()]*\))/\1->vm_end/g' fs/proc/task_mmu.c
+            echo "[fix] fs/proc/task_mmu.c: VMA_PAD_START(x) -> x->vm_end"
+          fi
+
+          # 3) drivers/soc/qcom/minidump_log.c: "static md_align_offset;" tanpa tipe, ditolak clang
+          F=drivers/soc/qcom/minidump_log.c
+          if [ -f "$F" ] && grep -qE "^static[[:space:]]+md_align_offset[[:space:]]*;" "$F"; then
+            sed -i -E 's/^static[[:space:]]+md_align_offset[[:space:]]*;/static int md_align_offset;/' "$F"
+            echo "[fix] $F: static md_align_offset -> static int md_align_offset"
+          fi
+
+          # 4) fs/notify/fdinfo.c: inotify_mark_user_mask() belum ada (pengaman tambahan)
+          if [ -f fs/notify/fdinfo.c ] && grep -q "inotify_mark_user_mask(" fs/notify/fdinfo.c \
+             && ! grep -rqE "inotify_mark_user_mask[[:space:]]*\(" include fs/notify --include=*.h; then
+            sed -i 's/inotify_mark_user_mask(mark)/(mark->mask \& IN_ALL_EVENTS)/g' fs/notify/fdinfo.c
+            echo "[fix] fs/notify/fdinfo.c: inotify_mark_user_mask(mark) -> (mark->mask & IN_ALL_EVENTS)"
+          fi
+
+          # Cek akhir: kalau masih ada sisa, berhenti DI SINI (detik) supaya tidak buang 1 jam compile
+          BAD=0
+          if grep -q "i_user_ns" fs/susfs.c && ! grep -rq "i_user_ns" include; then
+            echo "::error::fs/susfs.c masih memakai i_user_ns"; grep -n "i_user_ns" fs/susfs.c; BAD=1
+          fi
+          if grep -q "VMA_PAD_START" fs/proc/task_mmu.c && ! grep -rqE "define[[:space:]]+VMA_PAD_START" include; then
+            echo "::error::fs/proc/task_mmu.c masih memakai VMA_PAD_START"; grep -n "VMA_PAD_START" fs/proc/task_mmu.c; BAD=1
+          fi
+          if [ -f "$F" ] && grep -qE "^static[[:space:]]+md_align_offset[[:space:]]*;" "$F"; then
+            echo "::error::$F masih 'static md_align_offset;' tanpa tipe"; BAD=1
+          fi
+          if [ -f fs/notify/fdinfo.c ] && grep -q "inotify_mark_user_mask(" fs/notify/fdinfo.c \
+             && ! grep -rqE "inotify_mark_user_mask[[:space:]]*\(" include fs/notify --include=*.h; then
+            echo "::error::fs/notify/fdinfo.c masih memakai inotify_mark_user_mask"; grep -n "inotify_mark_user_mask" fs/notify/fdinfo.c; BAD=1
+          fi
+          [ "$BAD" = 0 ] || exit 1
+          echo "Semua perbaikan kompilasi sudah beres"
+
+      - name: Config kernel
+        working-directory: kernel
+        run: |
+          if [ ! -f "arch/arm64/configs/$DEFCONFIG" ]; then
+            echo "::error::Defconfig '$DEFCONFIG' tidak ditemukan. Pilih salah satu dari daftar di bawah, lalu jalankan ulang."
+            find arch/arm64/configs -name "*defconfig*" | sed 's|arch/arm64/configs/||' | sort
+            exit 1
+          fi
+          MK="make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi-"
+          $MK "$DEFCONFIG"
+          scripts/config --file out/.config \
+            -e KSU -e KSU_SUSFS \
+            -d KSU_MANUAL_HOOK -d KSU_TRACEPOINT_HOOK \
+            -e KSU_SUSFS_SUS_PATH -e KSU_SUSFS_SUS_MOUNT -e KSU_SUSFS_SUS_KSTAT \
+            -e KSU_SUSFS_SPOOF_UNAME -e KSU_SUSFS_OPEN_REDIRECT -e KSU_SUSFS_SUS_MAP \
+            -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+            -d KSU_SUSFS_ENABLE_LOG -d KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+            -d LTO_NONE -d LTO_CLANG_FULL -e LTO_CLANG_THIN \
+            -d DEBUG_INFO_BTF -d DEBUG_INFO_BTF_MODULES
+          $MK olddefconfig
+          grep KSU out/.config
+          grep -E "LTO|CFI" out/.config || true
+          echo "--- status BTF:"
+          grep -E "DEBUG_INFO_BTF" out/.config || true
+          for O in KSU KSU_SUSFS; do
+            grep -q "^CONFIG_${O}=y" out/.config || { echo "::error::CONFIG_${O} tidak aktif di out/.config"; exit 1; }
+          done
+
+      - name: Build kernel
+        working-directory: kernel
+        run: |
+          set -o pipefail
+          make -k -j$(nproc) O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+            2>&1 | tee ../build.log
+
+      # AnyKernel3 sengaja DIPISAH: bungkus zip-nya lewat workflow "anykernel3.yml".
+      - name: Siapkan Image
+        run: |
+          IMG=kernel/out/arch/arm64/boot/Image
+          if [ ! -f "$IMG" ]; then
+            echo "::error::Image tidak ditemukan. Build belum selesai dengan benar, lihat log."
+            exit 1
+          fi
+          mkdir -p hasil
+          cp "$IMG" hasil/Image
+          ls -lh hasil/Image
+
+      - name: Upload Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-image
+          path: hasil/Image
+          if-no-files-found: error
+
+      - name: Ringkasan error (tampil di halaman run)
+        if: failure()
+        run: |
+          {
+            echo "## Error build"
+            echo "Salin teks di bawah dan kirim ke Claude kalau perlu bantuan."
+            echo '```'
+            if [ -f build.log ]; then
+              grep -nE "error:|\*\*\*|ld\.lld: error|undefined symbol|BTF:|Failed to|not available|No such file" build.log | head -40 || true
+            else
+              echo "build.log belum ada: gagal sebelum tahap compile. Buka step yang merah di atas."
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
