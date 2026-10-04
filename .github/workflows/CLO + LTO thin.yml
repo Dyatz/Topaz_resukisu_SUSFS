@@ -1,4 +1,4 @@
-name: Build CLO Kernel + ReSukiSU + SUSFS
+name: Build CLO + LTO thin 
 
 on:
   workflow_dispatch:
