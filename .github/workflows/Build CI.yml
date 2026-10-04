@@ -1,0 +1,166 @@
+name: Bungkus AnyKernel3
+
+# Workflow TERPISAH dari build kernel.
+# Jalankan SETELAH workflow "Build CLO Kernel + ReSukiSU + SUSFS" (main.yml) selesai hijau.
+# Tugasnya hanya: ambil file Image dari build itu, lalu bungkus jadi zip yang bisa di-flash.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "ID run build (angka di akhir URL run). Kosongkan = pakai build sukses terakhir"
+        required: false
+        default: ""
+      zip_name:
+        description: "Nama file zip (tanpa .zip)"
+        required: false
+        default: "Kernel-ReSukiSU-SUSFS"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  pack:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Tentukan run build yang dipakai
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          if [ -z "$RUN_ID" ]; then
+            RUN_ID=$(gh run list --workflow=main.yml --status=success --limit=1 --json databaseId --jq '.[0].databaseId')
+          fi
+          if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
+            echo "::error::Belum ada build yang sukses. Jalankan workflow build (main.yml) dulu sampai hijau."
+            exit 1
+          fi
+          echo "Pakai build run: $RUN_ID"
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Unduh Image dari build
+        uses: actions/download-artifact@v8
+        with:
+          name: kernel-image
+          run-id: ${{ steps.find.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: image
+
+      - name: Cek Image (harus kernel arm64)
+        run: |
+          test -f image/Image || { echo "::error::File Image tidak ada di artifact kernel-image"; exit 1; }
+          # Kernel arm64 selalu punya tanda "ARM\x64" (hex 41 52 4d 64) di byte ke-56
+          MAGIC=$(dd if=image/Image bs=1 skip=56 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')
+          if [ "$MAGIC" != "41524d64" ]; then
+            echo "::error::Image bukan kernel arm64 yang valid (penanda: ${MAGIC:-kosong}). Batal dibungkus."
+            exit 1
+          fi
+          echo "Image valid: kernel arm64, ukuran $(du -h image/Image | cut -f1)"
+
+      - name: Bungkus AnyKernel3
+        id: pack
+        env:
+          ZIP_NAME: ${{ inputs.zip_name }}
+        run: |
+          # buang karakter aneh dari nama supaya aman dipakai sebagai nama file
+          ZIP_NAME=$(printf '%s' "${ZIP_NAME:-Kernel-ReSukiSU-SUSFS}" | tr -cd 'A-Za-z0-9._-')
+          [ -n "$ZIP_NAME" ] || ZIP_NAME=Kernel-ReSukiSU-SUSFS
+
+          test -f image/Image || { echo "::error::File Image tidak ada di artifact kernel-image"; exit 1; }
+
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3
+          cp image/Image AnyKernel3/Image
+          cd AnyKernel3
+
+          # anykernel.sh bawaan hanyalah contoh untuk HP lain (Galaxy Nexus): path partisi dan
+          # edit ramdisk-nya salah untuk topaz. Diganti versi bersih: hanya ganti kernel,
+          # ramdisk tidak disentuh sama sekali.
+          cat > anykernel.sh <<'AKEOF'
+          ### AnyKernel3 - Redmi Note 12 4G (topaz), ganti kernel saja
+          ### Mendukung perangkat arm64, A/B (slot) dan A-only
+          properties() { '
+          kernel.string=Topaz Kernel + ReSukiSU + SUSFS
+          do.devicecheck=0
+          do.modules=0
+          do.systemless=0
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=topaz
+          supported.versions=
+          supported.patchlevels=
+          supported.vendorpatchlevels=
+          '; } # end properties
+
+          # boot shell variables
+          BLOCK=boot;
+          IS_SLOT_DEVICE=auto;   # auto: A/B terdeteksi otomatis, A-only tetap jalan
+          SLOT_SELECT=active;    # A/B: tulis ke slot yang sedang aktif
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=auto;
+
+          # import functions/variables and setup patching - see for reference (DO NOT REMOVE)
+          . tools/ak3-core.sh;
+
+          ### Pemeriksaan sebelum menulis ke partisi (sampai sini belum ada yang diubah)
+          ui_print " " "== Cek perangkat ==";
+
+          # 1) Arsitektur: hanya arm64
+          AKX_ARM64=unknown;
+          if [ -r /proc/config.gz ]; then
+            # paling akurat: baca konfigurasi kernel yang sedang berjalan
+            if zcat /proc/config.gz 2>/dev/null | grep -q '^CONFIG_ARM64=y'; then
+              AKX_ARM64=yes;
+            elif zcat /proc/config.gz 2>/dev/null | grep -q '^CONFIG_'; then
+              AKX_ARM64=no;
+            fi;
+          fi;
+          if [ "$AKX_ARM64" = unknown ]; then
+            AKX_M=$(uname -m 2>/dev/null);
+            AKX_ABI="$(getprop ro.product.cpu.abilist 2>/dev/null) $(getprop ro.product.cpu.abi 2>/dev/null)";
+            case "$AKX_M" in
+              aarch64|arm64) AKX_ARM64=yes;;
+              x86*|i?86|mips*|armv[4-7]*) AKX_ARM64=no;;
+              *) case "$AKX_ABI" in *arm64*) AKX_ARM64=yes;; esac;;
+            esac;
+          fi;
+          case "$AKX_ARM64" in
+            yes) ui_print "Arsitektur : arm64 (OK)";;
+            no) abort "Perangkat ini BUKAN arm64, sedangkan kernel ini khusus arm64. Dibatalkan, tidak ada yang diubah.";;
+            *) ui_print "Arsitektur : tidak bisa dipastikan, lanjut dengan asumsi arm64";;
+          esac;
+
+          # 2) A/B atau A-only (pemilihan partisi sebenarnya dikerjakan AnyKernel3, ini untuk info)
+          AKX_SLOT=$(getprop ro.boot.slot_suffix 2>/dev/null);
+          [ "$AKX_SLOT" ] || AKX_SLOT=$(sed -n 's/.*androidboot\.slot_suffix=\([^ ]*\).*/\1/p' /proc/cmdline 2>/dev/null | head -n1);
+          if [ ! "$AKX_SLOT" ]; then
+            AKX_S=$(getprop ro.boot.slot 2>/dev/null);
+            [ "$AKX_S" ] || AKX_S=$(sed -n 's/.*androidboot\.slot=\([^ ]*\).*/\1/p' /proc/cmdline 2>/dev/null | head -n1);
+            [ "$AKX_S" ] && AKX_SLOT=_$AKX_S;
+          fi;
+          case "$AKX_SLOT" in
+            "") ui_print "Tipe       : A-only (tanpa slot)";;
+            *) ui_print "Tipe       : A/B, kernel ditulis ke slot aktif ($AKX_SLOT)";;
+          esac;
+
+          # boot install (tanpa unpack/repack ramdisk)
+          split_boot;
+          flash_boot;
+          AKEOF
+
+          rm -rf .git .github README.md
+          zip -r9 "../${ZIP_NAME}.zip" ./*
+          cd ..
+          ls -lh "${ZIP_NAME}.zip"
+          echo "zip=${ZIP_NAME}.zip" >> "$GITHUB_OUTPUT"
+          echo "name=${ZIP_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload zip
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.pack.outputs.name }}
+          path: ${{ steps.pack.outputs.zip }}
+          if-no-files-found: error
