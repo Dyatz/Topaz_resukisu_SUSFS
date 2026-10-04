@@ -80,7 +80,7 @@ Konfigurasi ini **masih berubah selama pengujian**.
 | BTF | Dimatikan |
 | Hasil build | `Image` dibungkus zip AnyKernel3 |
 
-Perangkat uji: _(isi: merek, tipe, codename)_
+Perangkat uji: _(Xiaomi,Redmi Note 12 4G,topaz)_
 
 ---
 
