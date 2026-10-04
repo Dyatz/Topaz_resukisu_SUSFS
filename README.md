@@ -133,7 +133,7 @@ Slot lainnya tidak disentuh oleh zip, jadi itu jaring pengaman utama.
 - [x] Build otomatis lewat GitHub Actions
 - [x] Pemasangan ReSukiSU dan SUSFS otomatis
 - [x] Zip AnyKernel3 khusus arm64 dan A/B
-- [ ] Modul vendor
+- [x] Modul vendor
 - [ ] Pengujian stabilitas jangka panjang
 - [ ] Pengujian di lebih dari satu perangkat
 - [ ] Rilis publik pertama
@@ -162,7 +162,7 @@ Slot lainnya tidak disentuh oleh zip, jadi itu jaring pengaman utama.
 
 ## 📄 Lisensi
 
-Kernel Linux berlisensi **GPL-2.0**. Komponen lain mengikuti lisensinya masing-masing.
+Kernel Linux berlisensi **GPL-3.0**. Komponen lain mengikuti lisensinya masing-masing.
 
 ## ⚖️ Penafian
 
