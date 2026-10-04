@@ -483,6 +483,26 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
             2>&1 | tee ../build.log
 
+      - name: Tambahkan driver vendor (Xiaomi redmi note 12 4g topaz/tapas)
+        working-directory: kernel
+        run: |
+          echo "Mengumpulkan module driver vendor (WLAN, Audio, Touchscreen, dll) untuk Topaz/Tapas..."
+          
+          # Eksekusi instalasi modul
+          make -j$(nproc) O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+            INSTALL_MOD_PATH=../hasil/vendor INSTALL_MOD_STRIP=1 DEPMOD=true modules_install
+          
+          # VALIDASI YANG BENAR: Hitung keberadaan file .ko secara spesifik
+          MODULE_COUNT=$(find ../hasil/vendor/lib/modules -type f -name "*.ko" 2>/dev/null | wc -l)
+          
+          if [ "$MODULE_COUNT" -eq 0 ]; then
+            echo "::error::Fatal: Modul gagal dikompilasi atau menghasilkan 0 file driver (.ko)! Cek tahap Build kernel sebelumnya."
+            exit 1
+          fi
+          
+          echo "Validasi lolos. Total module vendor (.ko) yang berhasil diekstrak: $MODULE_COUNT"
+          
       # AnyKernel3 sengaja DIPISAH: bungkus zip-nya lewat workflow "anykernel3.yml".
       - name: Siapkan Image
         run: |
