@@ -5,6 +5,9 @@ env:
   KERNEL_VERSION: "5.15"
   ANDROID_VERSION: "13"
 
+  permissions:
+  contents: write
+
 on:
   schedule:
     - cron: '0 0 * * 1'
