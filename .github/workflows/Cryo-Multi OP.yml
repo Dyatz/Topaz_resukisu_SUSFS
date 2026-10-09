@@ -613,12 +613,57 @@ jobs:
           echo "✅ Package created: $ZIP_NAME"
 
       - name: "⬆️ Upload to GitHub Release"
-        uses: softprops/action-gh-release@v1
+        id: release
+        uses: softprops/action-gh-release@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
         with:
           files: ${{ env.ZIP_NAME }}
-          tag_name: "Cryo Kernel"
+          tag_name: "Cryo-Kernel"
+          name: "Cryo Kernel"
+          fail_on_unmatched_files: true
+
+      - name: "📨 Send Telegram notification"
+        if: always()
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_USER_ID }}
+          RELEASE_URL: ${{ steps.release.outputs.url }}
+          RUN_URL: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          # Isi link gambar banner (opsional). Kosong = dikirim sebagai pesan teks biasa.
+          BANNER_URL=""
+
+          if [ -z "$TG_TOKEN" ] || [ -z "$TG_CHAT" ]; then
+            echo "Secret TELEGRAM_BOT_TOKEN / TELEGRAM_USER_ID belum diisi, notifikasi dilewati."
+            exit 0
+          fi
+
+          send_telegram() {
+            TEXT="$1"
+            if [ -n "$BANNER_URL" ]; then
+              API="sendPhoto"
+              set -- --data-urlencode "photo=${BANNER_URL}" --data-urlencode "caption=${TEXT}"
+            else
+              API="sendMessage"
+              set -- --data-urlencode "text=${TEXT}"
+            fi
+            URL="https://api.telegram.org/bot${TG_TOKEN}/${API}"
+            RESP=$(curl -s -X POST "$URL" -d chat_id="$TG_CHAT" -d parse_mode="Markdown" "$@" || true)
+            case "$RESP" in
+              *'"ok":true'*) echo "Notifikasi Telegram terkirim."; return 0 ;;
+            esac
+            echo "Gagal dengan format Markdown: $RESP"
+            RESP=$(curl -s -X POST "$URL" -d chat_id="$TG_CHAT" "$@" || true)
+            case "$RESP" in
+              *'"ok":true'*) echo "Notifikasi Telegram terkirim (tanpa format)." ;;
+              *) echo "Notifikasi Telegram gagal: $RESP" ;;
+            esac
+          }
+
+          if [ "$JOB_STATUS" = "success" ]; then
+            MESSAGE="✅ *CRYO Kernel Build Success*
 
           📦 *Build Information:*
           • Kernel: \`Linux 5.15\`
@@ -645,22 +690,14 @@ jobs:
           • BakaSU (Main Root Manager)
           • SukiSU-Ultra
 
-          🕐 *Build Date:* $(date '+%Y-%m-%d %H:%M:%S UTC')
-          📦 *Package:* \`${{ env.ZIP_NAME }}\`
+          🕐 *Build Date:* $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          📦 *Package:* \`${ZIP_NAME}\`
 
           ⬇️ [Download Here]($RELEASE_URL)"
-
-            curl -s -X POST \
-              -d chat_id=${{ secrets.TELEGRAM_USER_ID }} \
-              -d photo="${BANNER_URL}" \
-              --data-urlencode "caption=${MESSAGE}" \
-              -d parse_mode="Markdown" \
-              -d disable_web_page_preview="false" \
-              "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendPhoto"
-
+            send_telegram "$MESSAGE"
           else
             FAILURE_MSG="❌ *CRYO Kernel Build Failed*
-            
+
           📦 *Build Information:*
           • Kernel: \`Linux 5.15\`
           • Android: \`13-17\`
@@ -671,15 +708,9 @@ jobs:
           • Optimization: \`-O2\`
           • BBG: \`Enabled\`
           • Droidspaces: \`Enabled\`
-          
-          🕐 *Failed at:* $(date '+%Y-%m-%d %H:%M:%S UTC')
 
-          🔍 Check the [workflow logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."
-           
-            curl -s -X POST \
-              -d chat_id=${{ secrets.TELEGRAM_USER_ID }} \
-              -d photo="${BANNER_URL}" \
-              --data-urlencode "caption=${FAILURE_MSG}" \
-              -d parse_mode="Markdown" \
-              "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendPhoto"
+          🕐 *Failed at:* $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+
+          🔍 Check the [workflow logs]($RUN_URL) for details."
+            send_telegram "$FAILURE_MSG"
           fi
