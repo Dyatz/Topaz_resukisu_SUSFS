@@ -618,7 +618,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
         with:
-          files: ${{ env.ZIP_NAME }}
+          files: "Cryo-Kernel Multi OP"
           tag_name: "Cryo-Kernel"
           name: "Cryo Kernel"
           fail_on_unmatched_files: true
