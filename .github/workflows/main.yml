@@ -100,10 +100,10 @@ jobs:
           sudo docker image prune --all --force
           sudo docker builder prune -a -f
           
-      - name: 📐 Setup SWAP 14GB
+      - name: 📐 Setup SWAP 20GB
         uses: pierotofy/set-swap-space@master
         with:
-            swap-size-gb: 14
+            swap-size-gb: 20
             
       - name: 📐 Tune Swap
         run: |
@@ -326,7 +326,7 @@ jobs:
           ║     Features:                                       ║
           ║     • Daily Driver Optimized                        ║
           ║     • Full LTO + -O2 Optimization                   ║
-          ║     • AOSP clang-r614150                            ║
+          ║     • AOSP clang-r547379                            ║
           ║     • Droidspaces Support                           ║
           ║     • Baseband-guard v1 Support                     ║
           ║     • Vanilla & BakaSU (Multi Manager Support).     ║
