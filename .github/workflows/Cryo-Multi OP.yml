@@ -613,12 +613,10 @@ jobs:
           echo "✅ Package created: $ZIP_NAME"
 
       - name: "⬆️ Upload to GitHub Release"
-        id: release
         uses: softprops/action-gh-release@v3
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
         with:
-          files: "Cryo-Kernel Multi OP"
-          tag_name: "Cryo-Kernel"
-          name: "Cryo Kernel"
+          files: ${{ env.ZIP_NAME }}
+          tag_name: Cryo-Kernel
+          name: Cryo Kernel
           fail_on_unmatched_files: true
+          overwrite_files: true
