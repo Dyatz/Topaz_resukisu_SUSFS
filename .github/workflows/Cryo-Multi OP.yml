@@ -1,4 +1,4 @@
-name: "Build Cryo-MULTI OPI"
+name: "Build Cryo-MULTI OP"
 
 env:
   OUT_DIR: "out"
