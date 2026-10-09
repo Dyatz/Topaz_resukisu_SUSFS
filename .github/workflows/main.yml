@@ -160,10 +160,18 @@ jobs:
             local url="$1"
             local file=$(basename "$url")
             curl -L -o "$file" "$url"
-            patch -p1 < "$file" || { echo "::error::Hunks failed in $file"; exit 1; }
+            
+            # Cek apakah patch sudah terpasang (Logika pintar dari Claude)
+            if patch -p1 -R --dry-run -s -f < "$file" > /dev/null 2>&1; then
+              echo "✅ Sudah terpasang, dilewati: $file"
+            else
+              # Jika belum terpasang, paksa pasang. Jika gagal, HENTIKAN BUILD (Rem darurat)
+              patch -p1 --batch < "$file" || { echo "::error::Hunks failed in $file (Konflik kode serius!)"; exit 1; }
+              echo "✅ Berhasil dipasang: $file"
+            fi
             rm -f "$file"
           }
-
+          
           apply_patch "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/main/0001-gki-fixup.patch"
 
           echo '${{ toJSON(matrix.kernel.extra_patches) }}' | jq -r '.[]' | while read p; do
