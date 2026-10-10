@@ -294,6 +294,25 @@ jobs:
             ${{ env.WORK_DIR }}/${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}/*.rej
           retention-days: 3
           if-no-files-found: ignore
+          
+      - name: "📁 Copy Vanilla kernel image"
+        if: matrix.kernel.enable_ksu == false
+        working-directory: ${{ env.WORK_DIR }}/out/dist
+        run: |
+          cp Image "${{ env.OUTPUT_NAME }}"
+
+      - name: "📁 Copy KSU kernel image"
+        if: matrix.kernel.enable_ksu == true
+        working-directory: ${{ env.WORK_DIR }}/out/dist
+        run: |
+          cp Image "${{ env.OUTPUT_NAME }}"
+
+      - name: "📤 Upload kernel artifact"
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.kernel.name }}-kernel
+          path: ${{ env.WORK_DIR }}/out/dist/${{ env.OUTPUT_NAME }}
+          retention-days: 1
                
   package-kernels:
     name: "📦 Package Kernels"
