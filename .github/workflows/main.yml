@@ -287,10 +287,12 @@ jobs:
         with:
           name: error-logs-${{ matrix.kernel.name }}
           path: |
-            ${{ env.WORK_DIR }}/out/build.log
+            ${{ env.WORK_DIR }}/build_full.log
             ${{ env.WORK_DIR }}/out/.config
-            ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}/*.rej
+            ${{ env.WORK_DIR }}/${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}/*.rej
           retention-days: 3
+          if-no-files-found: ignore
+          
           
       - name: "📦 Package AnyKernel3"
         working-directory: ${{ env.WORK_DIR }}
