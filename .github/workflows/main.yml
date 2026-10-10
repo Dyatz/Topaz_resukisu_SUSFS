@@ -155,8 +155,8 @@ jobs:
           
           # Fix localversion
           sed -i 's/CONFIG_LOCALVERSION_AUTO=y/# CONFIG_LOCALVERSION_AUTO is not set/g' "$CONFIG_FILE" || true
-          echo "CONFIG_LOCALVERSION=\"${{ env.LOCAL_VERSION }}-${{ env.BUILD_TIME }}\"" >> "$CONFIG_FILE"
-
+          echo "CONFIG_LOCALVERSION=\"${{ env.LOCAL_VERSION }}\"" >> "$CONFIG_FILE"
+          
           apply_patch() {
             local url="$1"
             local file=$(basename "$url")
