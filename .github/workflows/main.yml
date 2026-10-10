@@ -276,6 +276,9 @@ jobs:
 
       - name: "🔨 Build kernel"
         working-directory: ${{ env.WORK_DIR }}
+        env:
+          KBUILD_BUILD_USER: dyatz
+          KBUILD_BUILD_HOST: GitHub
         run: |
           set -o pipefail
           
