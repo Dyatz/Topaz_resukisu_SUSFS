@@ -136,6 +136,7 @@ jobs:
           # Remove unused clang for more space
           rm -rf prebuilts/clang/host/linux-x86/clang-3289846
           rm -rf prebuilts/clang/host/linux-x86/clang-r450784e
+          rm -rf prebuilts/clang/host/linux-x86/clang-r596125
           rm -rf prebuilts/clang/host/linux-x86/clang-stable
           
           # Update build config constants
