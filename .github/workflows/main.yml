@@ -279,6 +279,20 @@ jobs:
         working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
         run: |
          echo 'KBUILD_CFLAGS += -Wno-implicit-function-declaration' >> Makefile
+         
+      - name: "✍️ Set kernel build identity"
+        working-directory: ${{ env.KERNEL_LOC_DIR }}/${{ env.KERNEL_NAME }}
+        run: |
+          F=scripts/mkcompile_h
+          [ -f "$F" ] || { echo "::error::$F tidak ditemukan"; exit 1; }
+          sed -i -E \
+            -e 's/yougotme101/Dyatz/g' \
+            -e 's/^([[:space:]]*)LINUX_COMPILE_BY=.*/\1LINUX_COMPILE_BY="Dyatz"/' \
+            -e 's/^([[:space:]]*)LINUX_COMPILE_HOST=.*/\1LINUX_COMPILE_HOST="GitHub"/' "$F"
+          grep -nE "LINUX_COMPILE_(BY|HOST)" "$F"
+          if grep -rIq "yougotme101" scripts Makefile 2>/dev/null; then
+            echo "::warning::Nama lama masih ada di:"; grep -rIl "yougotme101" scripts Makefile
+          fi
 
       - name: "🔨 Build kernel"
         working-directory: ${{ env.WORK_DIR }}
