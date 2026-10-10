@@ -26,7 +26,7 @@ jobs:
             branch: "android13-5.15-lts"
             defconfig: "gki_defconfig"
             local_version: "-Cryo-GKI"
-            output_name: "Image"
+            output_name: "Image.gki.ksu"
             enable_ksu: true
             extra_patches:
               - "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/main/0001-gki-fixup.patch"
@@ -40,7 +40,7 @@ jobs:
             branch: "kernel.lnx.5.15.r1-rel"
             defconfig: "gki_defconfig"
             local_version: "-Cryo-CLO"
-            output_name: "Image"
+            output_name: "Image.clo.ksu"
             enable_ksu: true
             extra_patches:
               - "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/main/0001-gki-fixup.patch"
@@ -54,7 +54,7 @@ jobs:
             branch: "android13-5.15-lts"
             defconfig: "gki_defconfig"
             local_version: "-Cryo-GKI"
-            output_name: "Image"
+            output_name: "Image.gki.noksu"
             enable_ksu: false
             extra_patches:
               - "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/main/0001-gki-fixup.patch"
@@ -68,7 +68,7 @@ jobs:
             branch: "kernel.lnx.5.15.r1-rel"
             defconfig: "gki_defconfig"
             local_version: "-Cryo-CLO"
-            output_name: "Image"
+            output_name: "Image.clo.noksu"
             enable_ksu: false
             extra_patches:
               - "https://raw.githubusercontent.com/topnotchfreaks/kernel_patches/main/0001-gki-fixup.patch"
@@ -335,7 +335,8 @@ jobs:
 
           # Copy kernel images
           find ./artifacts -name "Image.*" -exec cp {} AnyKernel3/ \;
-
+          ls AnyKernel3/Image.*
+          
           # Create banner
           cat > AnyKernel3/banner << 'EOF'
           ╔═════════════════════════════════════════════════════╗
@@ -399,8 +400,8 @@ jobs:
       - name: "📤 Upload kernel ZIP artifact"
         uses: actions/upload-artifact@v4
         with:
-          name: AK3_Cryo_${{ matrix.kernel.name }}
-          path: ${{ env.WORK_DIR }}/AK3_Cryo_${{ matrix.kernel.name }}_*.zip
+          name: AK3_CRYO-AIO
+          path: AK3_CRYO-AIO-FULL_MULTI_*.zip
           retention-days: 3
-          
+          if-no-files-found: error
           
