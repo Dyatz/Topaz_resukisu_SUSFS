@@ -331,7 +331,7 @@ jobs:
           set -e
 
           # Clone AnyKernel3
-          git clone --depth=1 https://github.com/yougotme101/AnyKernel3 -b YASK AnyKernel3
+          git clone --depth=1 https://github.com/Dyatz/Cryo-AnyKernel3.git -b master AnyKernel3
 
           # Copy kernel images
           find ./artifacts -name "Image.*" -exec cp {} AnyKernel3/ \;
