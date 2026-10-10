@@ -184,6 +184,7 @@ jobs:
             -e CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE \
             -e CONFIG_TCP_CONG_ADVANCED \
             -d CONFIG_TCP_CONG_BIC \
+            -d CONFIG_TCP_CONG_HTCP \
             -e CONFIG_TCP_CONG_WESTWOOD \
             -e CONFIG_TCP_CONG_BBR \
             -e CONFIG_DEFAULT_BBR \
